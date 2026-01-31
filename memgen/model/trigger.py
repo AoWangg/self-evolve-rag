@@ -12,10 +12,14 @@ class MemGenTrigger(nn.Module):
         active: bool,
     ):
         super().__init__()
-        
+
         self.active = active
         self.model = model
         self.output_layer = nn.Linear(model.base_model.config.hidden_size, 2)
+
+        # Ensure output_layer uses the same dtype as the model
+        model_dtype = next(model.parameters()).dtype
+        self.output_layer = self.output_layer.to(model_dtype)
 
     def forward(
         self, 

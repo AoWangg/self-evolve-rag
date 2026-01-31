@@ -71,6 +71,10 @@ run:
         - tensorboard
         - wandb
 
+      # Wandb configuration
+      run_name: phase1a_weaver_sft
+      logging_first_step: True
+
   generation:
     max_turns: 2
     max_start_length: 256
@@ -83,7 +87,7 @@ run:
 # Phase 1: Enable memory retrieval and writeback for self-evolution
 memory:
   enable: true  # Enable memory retrieval
-  store_path: /root/autodl-tmp/real_experience.jsonl
+  store_path: /root/autodl-tmp/phase0_experience.jsonl
   index_type: simple
   topk: 1
   min_score: 0.3

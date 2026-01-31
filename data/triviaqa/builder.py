@@ -132,7 +132,11 @@ class TriviaQABuilder(BaseBuilder):  # Env
     def _rl_preprocess(cls, example: Dict) -> Dict:
         output = copy.deepcopy(example)
         output["answer"] = output["answer"]["normalized_aliases"]
-        output["prompt"] = output["question"]
+        # Convert prompt to chat format for proper generation with EOS token
+        output["prompt"] = [
+            {"role": "system", "content": TRIVIAQA_SYSTEM_PROMPT.strip()},
+            {"role": "user", "content": output["question"]}
+        ]
         return output
 
     @classmethod

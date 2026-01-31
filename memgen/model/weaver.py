@@ -17,15 +17,18 @@ class MemGenWeaver(nn.Module):
 
         self.model = model
 
+        # Get the dtype from the base model's embedding layer
+        model_dtype = model.get_input_embeddings().weight.dtype
+
         # prompt augmentation
         self.prompt_query_latents = nn.Parameter(
-            torch.randn(prompt_latents_len, model.base_model.config.hidden_size), 
+            torch.randn(prompt_latents_len, model.base_model.config.hidden_size, dtype=model_dtype),
             requires_grad=True
         )
 
         # inference augmentation
         self.inference_query_latents = nn.Parameter(
-            torch.randn(inference_latents_len, model.base_model.config.hidden_size), 
+            torch.randn(inference_latents_len, model.base_model.config.hidden_size, dtype=model_dtype),
             requires_grad=True
         )
     

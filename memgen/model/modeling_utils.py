@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional, Literal
+import logging
 
 from peft import PeftModel, LoraConfig
 import torch
@@ -16,6 +17,8 @@ from memgen.utils import (
     fix_model_parameters,
     open_model_parameters
 )
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class MemGenOutputWithPast(CausalLMOutputWithPast):
@@ -207,10 +210,10 @@ class MemGenGenerationMixin(GenerationMixin):
         if len(prompt_augment_idx) > 1:
             # If multiple found, use only the first one
             prompt_augment_idx = prompt_augment_idx[:1]
-            print(f"\n⚠️  WARNING: Multiple prompt augment indices found, using only the first one\n")
+            logger.debug("Multiple prompt augment indices found, using only the first one")
         elif len(prompt_augment_idx) == 0:
             # If none found, skip augmentation for this batch
-            print(f"\n⚠️  WARNING: No prompt augment index found, skipping augmentation\n")
+            logger.debug("No prompt augment index found, skipping augmentation")
             return []
 
         final_points = prompt_augment_idx[:1]

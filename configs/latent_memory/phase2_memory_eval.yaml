@@ -37,25 +37,25 @@ dataset:
 
 run:
   seed: 42
-  mode: eval
+  mode: evaluate
   train_weaver: False
   train_weaver_method: sft
   train_trigger: False
   train_trigger_method: grpo
 
   generation:
-    max_turns: 2
-    max_start_length: 256
-    max_prompt_length: 512
-    max_response_length: 128
-    max_obs_length: 128
+    max_turns: 1
+    max_start_length: 32
+    max_prompt_length: 64
+    max_response_length: 16
+    max_obs_length: 16
     temperature: 0.7
     eval_batch_size: 1
 
 # Phase 2: Memory-enhanced evaluation
 memory:
   enable: true  # Enable memory retrieval
-  store_path: /root/autodl-tmp/real_experience.jsonl
+  store_path: /root/autodl-tmp/phase0_experience.jsonl
   index_type: simple
   topk: 1
   min_score: 0.3

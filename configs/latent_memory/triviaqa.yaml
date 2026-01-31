@@ -120,8 +120,9 @@ run:
       remove_unused_columns: False
       load_best_model_at_end: True
       bf16: True
-      report_to:  
+      report_to:
         - tensorboard
+        - wandb
 
   # trigger training configs
   trigger:
@@ -145,7 +146,7 @@ run:
       learning_rate: 1e-5
       lr_scheduler_type: cosine
       warmup_ratio: 0.1
-      
+
       # duration
       logging_strategy: steps
       logging_steps: 1
@@ -157,8 +158,12 @@ run:
       remove_unused_columns: False
       load_best_model_at_end: True
       bf16: True
-      report_to:  
+      report_to:
         - tensorboard
+        - wandb
+
+      # Wandb configuration
+      run_name: phase1b_trigger_grpo
   
   # generation config for GRPO training and evaluation
   generation:
@@ -169,3 +174,15 @@ run:
     max_obs_length: 512
     temperature: 0.5
     eval_batch_size: 8
+
+# Memory configuration
+memory:
+  enable: true
+  store_path: /root/autodl-tmp/phase0_experience.jsonl
+  index_type: simple
+  topk: 1
+  min_score: 0.3
+  writeback:
+    enable: true
+    min_reward: 0.6
+    require_grounding: false

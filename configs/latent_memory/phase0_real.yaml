@@ -37,7 +37,7 @@ dataset:
 
 run:
   seed: 42
-  mode: eval  # Evaluation mode to collect experiences
+  mode: evaluate  # Evaluation mode to collect experiences
   train_weaver: False
   train_weaver_method: sft
   train_trigger: False

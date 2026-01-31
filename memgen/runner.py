@@ -138,12 +138,19 @@ class MemGenRunner:
         # Function to filter out samples exceeding max length
         def filter_func(sample):
             if "prompt" in sample and sample["prompt"] is not None:
-                encoded = tokenizer(sample["prompt"], add_special_tokens=True)
-                return len(encoded["input_ids"]) < max_len
+                prompt = sample["prompt"]
+                # Handle chat format (list of messages)
+                if isinstance(prompt, list):
+                    encoded = tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True)
+                    return len(encoded) < max_len
+                # Handle string format
+                else:
+                    encoded = tokenizer(prompt, add_special_tokens=True)
+                    return len(encoded["input_ids"]) < max_len
             elif "messages" in sample and sample["messages"] is not None:
                 conversation = tokenizer.apply_chat_template(sample["messages"][:2], tokenize=True)
                 return len(conversation) < max_len
-            return True 
+            return True
 
         # Apply filtering
         dataset = dataset.filter(filter_func)
@@ -201,14 +208,42 @@ class MemGenRunner:
     
     # ===== train trigger =====
     def _create_trigger_trainer(self):
-        
+
         if self.train_trigger_method == "grpo":
+            # Create a wrapper function to adapt the reward function interface
+            # GRPO trainer calls: reward_func(prompts=..., completions=..., **kwargs)
+            # But TriviaQAEnv.compute_reward expects: compute_reward(completions, envs, **kwargs)
+            def reward_wrapper(prompts, completions, **kwargs):
+                # Create envs from the dataset
+                # The dataset should have 'answer' field in kwargs
+                envs = []
+
+                # Get answers from kwargs (passed by GRPO trainer from the dataset)
+                answers = kwargs.get('answer', [])
+
+                for i, prompt in enumerate(prompts):
+                    # Create an env with the answer from the dataset
+                    class DummyEnv:
+                        def __init__(self, answer):
+                            self.task_config = {'answer': answer}
+
+                    # Get the answer for this sample
+                    if i < len(answers):
+                        answer = answers[i]
+                    else:
+                        # Fallback to empty answer if not available
+                        answer = []
+
+                    envs.append(DummyEnv(answer))
+
+                return self.env_cls.compute_reward(completions, envs, **kwargs)
+
             trigger_trainer = TriggerGRPOTrainer(
-                model=self.model, 
-                processing_class=self.processing_class, 
-                train_dataset=self.trigger_train_dataset, 
-                eval_dataset=self.trigger_valid_dataset, 
-                reward_funcs=[self.env_cls.compute_reward],
+                model=self.model,
+                processing_class=self.processing_class,
+                train_dataset=self.trigger_train_dataset,
+                eval_dataset=self.trigger_valid_dataset,
+                reward_funcs=[reward_wrapper],
                 args=self.trigger_grpo_training_args
             )
         else:
@@ -245,9 +280,19 @@ class MemGenRunner:
     
     # ===== evaluate =====
     def evaluate(self):
+        print(f"\n=== [DEBUG] 开始评估 ===")
+        print(f"[DEBUG] 评估前 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+        # 先移动到 GPU，再转换类型
+        self.model = self.model.cuda()
+        print(f"[DEBUG] 移动到 GPU 后显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
         self.model = self.model.to(torch.bfloat16)
+        print(f"[DEBUG] 转换为 bfloat16 后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
         self.model.fix_component("weaver")
         self.model.fix_component("trigger")
+        print(f"[DEBUG] fix_component 后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
         evaluate_func_mapping = {
             "STATIC": self._static_evaluate,
@@ -260,8 +305,16 @@ class MemGenRunner:
         return evaluate_func()
     
     def _static_evaluate(self):
-        
-        accelerator = Accelerator()
+
+        print(f"[DEBUG] 进入 _static_evaluate")
+        print(f"[DEBUG] GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+        accelerator = Accelerator(
+            mixed_precision='bf16',
+            gradient_accumulation_steps=1
+        )
+        print(f"[DEBUG] Accelerator 初始化后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
         writer = create_tensorboard(save_dir=self.working_dir)
         
         batch_size = self.interaction_config.batch_size
@@ -277,35 +330,54 @@ class MemGenRunner:
 
         # prepare model
         model_wrapped = accelerator.prepare_model(model=self.model, evaluation_mode=True)
+        print(f"[DEBUG] prepare_model 后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        print(f"[DEBUG] 模型 dtype: {next(model_wrapped.parameters()).dtype}")
+
         model_wrapped.eval()
-        
+        print(f"[DEBUG] model.eval() 后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
         # construct eval recorder
         test_funcs = [self.env_cls.compute_reward]
         save_file = os.path.join(output_dir, "answer.json")
         recorder = StaticEvalRecorder(compute_metrics=test_funcs, writer=writer, log_file=save_file)
         
         # batch generation
-        for test_batch in tqdm(test_dataloader):
-            with unwrap_model_for_generation(
-                model_wrapped, accelerator
-            ) as unwrapped_model:
-                # construct InteractionDataProto object
-                prompts = [x["prompt"] for x in test_batch]
-                prompt_inputs = self.processing_class(
-                    text=prompts, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=True
-                )
-                prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-                gen_batch = InteractionDataProto()
-                gen_batch.batch["input_ids"] = prompt_ids.to(accelerator.device)
-                gen_batch.batch["attention_mask"] = prompt_mask.to(accelerator.device)
-                gen_batch.no_tensor_batch["initial_prompts"] = [x["prompt"] for x in test_batch]
+        print(f"[DEBUG] 开始批量生成，数据集大小: {len(self.test_dataset)}")
+        for batch_idx, test_batch in enumerate(tqdm(test_dataloader)):
+            if batch_idx == 0:
+                print(f"[DEBUG] 第一个 batch 前 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
-                # generation manager
-                self.generation_manager.actor_rollout_wg = unwrapped_model
-                gen_output = self.generation_manager.run_agent_loop(gen_batch)
-            
-                completion_ids = gen_output.batch["responses"]
-                completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+            with torch.no_grad():
+                with unwrap_model_for_generation(
+                    model_wrapped, accelerator
+                ) as unwrapped_model:
+                    # construct InteractionDataProto object
+                    prompts = [x["prompt"] for x in test_batch]
+                    prompt_inputs = self.processing_class(
+                        text=prompts, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=True
+                    )
+                    prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+                    gen_batch = InteractionDataProto()
+                    gen_batch.batch["input_ids"] = prompt_ids.to(accelerator.device)
+                    gen_batch.batch["attention_mask"] = prompt_mask.to(accelerator.device)
+                    gen_batch.no_tensor_batch["initial_prompts"] = [x["prompt"] for x in test_batch]
+
+                    # generation manager
+                    self.generation_manager.actor_rollout_wg = unwrapped_model
+                    gen_output = self.generation_manager.run_agent_loop(gen_batch)
+
+                    completion_ids = gen_output.batch["responses"]
+                    completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+            if batch_idx == 0:
+                print(f"[DEBUG] 第一个 batch 生成后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+                print(f"[DEBUG] 峰值 GPU 显存: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+
+            # Clear GPU cache after each batch
+            torch.cuda.empty_cache()
+
+            if batch_idx == 0:
+                print(f"[DEBUG] 第一个 batch 清理后 GPU 显存: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
             if self.writeback_enabled:
                 rewards = self._compute_batch_rewards(completions, test_batch)
@@ -351,7 +423,10 @@ class MemGenRunner:
         # ===== body =====
         output_dir = self.interaction_config.output_dir
 
-        accelerator = Accelerator()
+        accelerator = Accelerator(
+            mixed_precision='bf16',
+            gradient_accumulation_steps=1
+        )
         writer = create_tensorboard(save_dir=self.working_dir) 
         save_file = os.path.join(output_dir, "conversations.txt")
         recorder = DynamicEvalRecorder(writer=writer, log_file=save_file)
@@ -372,17 +447,21 @@ class MemGenRunner:
         
         # batch generate
         for step, test_batch in tqdm(enumerate(test_dataloader)):
-            with unwrap_model_for_generation(
-                model_wrapped, accelerator
-            ) as unwrapped_model:
-                system_prompts, init_user_prompts, envs = _set_batch_envs(test_batch) 
-                input_data_proto = _build_data_proto(system_prompts, init_user_prompts, envs)
-                
-                self.generation_manager.actor_rollout_wg = unwrapped_model
-                outputs: InteractionDataProto = self.generation_manager.run_agent_loop(input_data_proto)
-                
-                inter_histories = outputs.no_tensor_batch["inter_histories"]
-                inter_context = self.processing_class.apply_chat_template(inter_histories, tokenize=False)
+            with torch.no_grad():
+                with unwrap_model_for_generation(
+                    model_wrapped, accelerator
+                ) as unwrapped_model:
+                    system_prompts, init_user_prompts, envs = _set_batch_envs(test_batch)
+                    input_data_proto = _build_data_proto(system_prompts, init_user_prompts, envs)
+
+                    self.generation_manager.actor_rollout_wg = unwrapped_model
+                    outputs: InteractionDataProto = self.generation_manager.run_agent_loop(input_data_proto)
+
+                    inter_histories = outputs.no_tensor_batch["inter_histories"]
+                    inter_context = self.processing_class.apply_chat_template(inter_histories, tokenize=False)
+
+            # Clear GPU cache after each batch
+            torch.cuda.empty_cache()
 
             # batch record
             rewards = []

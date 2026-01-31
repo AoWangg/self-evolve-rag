@@ -591,13 +591,13 @@ class MemGenModel(PreTrainedModel, MemGenLoraSwitchMixin, MemGenGenerationMixin)
                 past_key_values=current_cache
             )
             current_inputs_embeds, current_attention_mask, current_position_ids, current_input_ids = self._append_one_step(
-                outputs, 
-                current_inputs_embeds, 
-                current_attention_mask, 
-                current_position_ids, 
-                current_input_ids, 
-                do_sample=False, 
-                temperature=0.0
+                outputs,
+                current_inputs_embeds,
+                current_attention_mask,
+                current_position_ids,
+                current_input_ids,
+                do_sample=generation_config.do_sample,
+                temperature=generation_config.temperature
             )
             current_cache = outputs.past_key_values
 
@@ -743,10 +743,13 @@ class MemGenModel(PreTrainedModel, MemGenLoraSwitchMixin, MemGenGenerationMixin)
 
         # Load projection layers
         if 'reasoner_to_weaver.weight' in state_dict:
-            model.reasoner_to_weaver.weight.data = state_dict['reasoner_to_weaver.weight'].to(model.device)
-            model.reasoner_to_weaver.bias.data = state_dict['reasoner_to_weaver.bias'].to(model.device)
-            model.weaver_to_reasoner.weight.data = state_dict['weaver_to_reasoner.weight'].to(model.device)
-            model.weaver_to_reasoner.bias.data = state_dict['weaver_to_reasoner.bias'].to(model.device)
+            # Get the target dtype from the reasoner's embedding layer (base model dtype)
+            # Note: next(model.parameters()) may return weaver's latents which are float32
+            target_dtype = model.reasoner.get_input_embeddings().weight.dtype
+            model.reasoner_to_weaver.weight.data = state_dict['reasoner_to_weaver.weight'].to(device=model.device, dtype=target_dtype)
+            model.reasoner_to_weaver.bias.data = state_dict['reasoner_to_weaver.bias'].to(device=model.device, dtype=target_dtype)
+            model.weaver_to_reasoner.weight.data = state_dict['weaver_to_reasoner.weight'].to(device=model.device, dtype=target_dtype)
+            model.weaver_to_reasoner.bias.data = state_dict['weaver_to_reasoner.bias'].to(device=model.device, dtype=target_dtype)
 
         # Load weaver LoRA weights
         weaver_params = {k.replace('weaver.', ''): v for k, v in state_dict.items() if k.startswith('weaver.')}
@@ -805,16 +808,31 @@ class MemGenModel(PreTrainedModel, MemGenLoraSwitchMixin, MemGenGenerationMixin)
         if not memgen_config._name_or_path:
             memgen_config._name_or_path = model_name
         
-        base_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, attn_implementation="eager")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="eager",
+            low_cpu_mem_usage=True
+        )
         base_tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if weaver_model_name != model_name:
-            weaver_model = AutoModelForCausalLM.from_pretrained(weaver_model_name, torch_dtype=torch.float32, attn_implementation="eager")
+            weaver_model = AutoModelForCausalLM.from_pretrained(
+                weaver_model_name,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="eager",
+                low_cpu_mem_usage=True
+            )
         else:
             weaver_model = base_model
 
         if trigger_model_name != model_name:
-            trigger_model = AutoModelForCausalLM.from_pretrained(trigger_model_name, torch_dtype=torch.float32, attn_implementation="eager")
+            trigger_model = AutoModelForCausalLM.from_pretrained(
+                trigger_model_name,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="eager",
+                low_cpu_mem_usage=True
+            )
         else:
             trigger_model = base_model
         
